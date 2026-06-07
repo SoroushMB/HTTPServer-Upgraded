@@ -178,70 +178,6 @@ Added a browser-based terminal at **`http://localhost:8000/terminal`**:
 
 ---
 
-## How to Use
-
-```bash
-# Basic — serve current directory (with all upgrades active by default)
-python3 -m http.server 8000
-
-# With cross-origin support
-python3 -m http.server 8000 --cors
-
-# Serve a specific directory
-python3 -m http.server 8000 --directory /path/to/serve
-
-# With HTTPS (self-signed cert)
-python3 -m http.server 8000 --tls-cert cert.pem --tls-key key.pem
-
-# With SFTP file access alongside HTTP
-python3 -m http.server 8000 --sftp
-
-# SFTP with custom credentials
-python3 -m http.server 8000 --sftp --sftp-username admin --sftp-password mypass
-
-# SSH into the server (interactive shell)
-# ssh http@localhost -p 2222
-
-# Run a single command via SSH
-# ssh http@localhost -p 2222 ls -la
-
-# SFTP file transfer
-# sftp -P 2222 http@localhost
-
-# Web terminal at http://localhost:8000/terminal
-# (always available, no extra flag needed)
-```
-
-All visual and backend upgrades are **active by default** — no extra flags
-needed except `--cors` for cross-origin access and `--sftp` for the SFTP server.
-The web terminal at `/terminal` is always available.
-
----
-
-## Files Modified
-
-| File | Changes |
-|------|---------|
-| `/usr/lib/python3.14/http/server.py` | `list_directory()` — full HTML template replacement |
-| | `icon_map` — emoji-based file type icons |
-| | `send_head()` — ETag, Range, symlink guard |
-| | `list_directory()` — gzip compression |
-| | `end_headers()` — CORS headers |
-| | `do_OPTIONS()` — CORS preflight handler |
-| | `do_GET()` — `/terminal` route |
-| | `do_POST()` — `/terminal/exec` route |
-| | CLI parser — `--cors`, `--sftp`, `--sftp-port`, `--sftp-username`, `--sftp-password` flags |
-| | `import gzip`, `import secrets`, `import json`, `import shlex`, `import subprocess` — added |
-| | `from http import HTTPStatus, sftp_server` — added |
-| `/usr/lib/python3.14/http/sftp_server.py` | **New file** — paramiko-based SSH+SFTP server with PTY shell, exec, chroot jailing |
-
-## Backup
-
-Original unmodified stdlib files are backed up at:
-`~/http-server/backup/http-module-original/`
-
----
-
 ## Phase 3 — PUT / DELETE (stdlib file management)
 
 **File:** `server.py` — `SimpleHTTPRequestHandler`
@@ -307,6 +243,101 @@ Original unmodified stdlib files are backed up at:
 | | 4 | Removed `--sftp` flags, paramiko references, unused imports |
 | | 4 | JetBrains Mono, breadcrumb fix, yaml icon fix |
 | | 4 | All imports deduplicated to stdlib-only |
+| `/usr/lib/python3.14/http/sftp_server.py` | 2 | **Created** — paramiko-based SSH+SFTP server |
+| | 4 | **Deleted** — paramiko removed, functionality replaced by PUT/DELETE + terminal |
+
+
+## Phase 5 — Streaming Resilience & Client Disconnect Handling
+
+**File:** `server.py` — `SimpleHTTPRequestHandler.copyfile()`, `do_PUT()`
+
+### Problem
+
+When a client (e.g., a video player) disconnects mid-stream, `shutil.copyfileobj()` tries to write to a closed socket. This raises `BrokenPipeError` or `ConnectionResetError`, which propagates unhandled through `do_GET()` → `handle_one_request()` → `socketserver.py`, producing ugly tracebacks in the server log:
+
+```
+Exception occurred during processing of request from ('192.168.100.11', 35248)
+Traceback (most recent call last):
+  ...
+  File "/usr/lib/python3.14/shutil.py", line 257, in copyfileobj
+    fdst_write(buf)
+  File "/usr/lib/python3.14/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+```
+
+These are **harmless** — the client simply stopped reading (seeked, closed the tab, killed the player). But the tracebacks clutter the log and look alarming.
+
+### Fix in `copyfile()`
+
+Wrapped `shutil.copyfileobj()` in `try/except OSError`:
+
+```python
+def copyfile(self, source, outputfile):
+    try:
+        shutil.copyfileobj(source, outputfile)
+    except OSError:
+        pass  # client disconnected mid-stream, stop silently
+```
+
+`OSError` is the parent of both `BrokenPipeError` (Errno 32) and `ConnectionResetError` (Errno 104). The copy stops immediately when the socket dies — no partial data is written to the response because the socket is already gone.
+
+### Fix in `do_PUT()`
+
+- Reads in **64 KB chunks** (`min(remaining, 65536)`) instead of `self.rfile.read(length)` all at once
+- On partial read (empty buffer before all bytes received = client disconnect), **cleans up the partial file** and returns early without sending a response
+- The outer `except OSError` / `except Exception` handlers also catch socket errors during `send_error()` — if the client disconnected during upload, trying to send a 403 response would itself trigger another `BrokenPipeError`, which is now caught and silenced
+
+### Validation
+
+```
+# Before: streaming a video and seeking produces 5+ tracebacks per seek
+# After:  zero tracebacks, only the access log line
+```
+
+---
+
+## How to Use
+
+```bash
+# Basic — serve current directory (all upgrades active by default)
+python3 -m http.server 8000
+
+# With cross-origin support
+python3 -m http.server 8000 --cors
+
+# Serve a specific directory
+python3 -m http.server 8000 --directory /path/to/serve
+
+# Web terminal at http://localhost:8000/terminal
+# (always available, no extra flag needed)
+```
+
+All upgrades are **active by default** — zero flags needed for the core
+experience. Only `--cors` is optional for cross-origin access.
+
+---
+
+## Files Modified (Complete History)
+
+| File | Phase | Changes |
+|------|-------|---------|
+| `/usr/lib/python3.14/http/server.py` | 1 | `list_directory()` — full HTML template replacement |
+| | 1 | `icon_map` — emoji-based file type icons |
+| | 2 | `send_head()` — ETag, Range, symlink guard |
+| | 2 | `list_directory()` — gzip compression |
+| | 2 | `end_headers()` / `do_OPTIONS()` — CORS |
+| | 2 | `do_GET()` / `do_POST()` — terminal routing |
+| | 2 | CLI parser — `--cors` flag |
+| | 3 | `do_PUT()` — file upload with size limit, filename sanitization |
+| | 3 | `do_DELETE()` — file/directory removal, root guard |
+| | 3 | Upload button in directory listing UI |
+| | 3 | Terminal warning banner |
+| | 4 | Removed `--sftp` flags, paramiko references, unused imports |
+| | 4 | JetBrains Mono, breadcrumb fix, yaml icon fix |
+| | 4 | All imports deduplicated to stdlib-only |
+| | 5 | `copyfile()` — silent OSError catch on client disconnect |
+| | 5 | `do_PUT()` — chunked read, partial file cleanup on disconnect |
 | `/usr/lib/python3.14/http/sftp_server.py` | 2 | **Created** — paramiko-based SSH+SFTP server |
 | | 4 | **Deleted** — paramiko removed, functionality replaced by PUT/DELETE + terminal |
 
