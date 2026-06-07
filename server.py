@@ -1,85 +1,3 @@
-"""HTTP server classes.
-
-Note: BaseHTTPRequestHandler doesn't implement any HTTP request; see
-SimpleHTTPRequestHandler for simple implementations of GET, HEAD and POST,
-and (deprecated) CGIHTTPRequestHandler for CGI scripts.
-
-It does, however, optionally implement HTTP/1.1 persistent connections.
-
-Notes on CGIHTTPRequestHandler
-------------------------------
-
-This class is deprecated. It implements GET and POST requests to cgi-bin scripts.
-
-If the os.fork() function is not present (Windows), subprocess.Popen() is used,
-with slightly altered but never documented semantics.  Use from a threaded
-process is likely to trigger a warning at os.fork() time.
-
-In all cases, the implementation is intentionally naive -- all
-requests are executed synchronously.
-
-SECURITY WARNING: DON'T USE THIS CODE UNLESS YOU ARE INSIDE A FIREWALL
--- it may execute arbitrary Python code or external programs.
-
-Note that status code 200 is sent prior to execution of a CGI script, so
-scripts cannot send other status codes such as 302 (redirect).
-
-XXX To do:
-
-- log requests even later (to capture byte count)
-- log user-agent header and other interesting goodies
-- send error log to separate file
-"""
-
-
-# See also:
-#
-# HTTP Working Group                                        T. Berners-Lee
-# INTERNET-DRAFT                                            R. T. Fielding
-# <draft-ietf-http-v10-spec-00.txt>                     H. Frystyk Nielsen
-# Expires September 8, 1995                                  March 8, 1995
-#
-# URL: http://www.ics.uci.edu/pub/ietf/http/draft-ietf-http-v10-spec-00.txt
-#
-# and
-#
-# Network Working Group                                      R. Fielding
-# Request for Comments: 2616                                       et al
-# Obsoletes: 2068                                              June 1999
-# Category: Standards Track
-#
-# URL: http://www.faqs.org/rfcs/rfc2616.html
-
-# Log files
-# ---------
-#
-# Here's a quote from the NCSA httpd docs about log file format.
-#
-# | The logfile format is as follows. Each line consists of:
-# |
-# | host rfc931 authuser [DD/Mon/YYYY:hh:mm:ss] "request" ddd bbbb
-# |
-# |        host: Either the DNS name or the IP number of the remote client
-# |        rfc931: Any information returned by identd for this person,
-# |                - otherwise.
-# |        authuser: If user sent a userid for authentication, the user name,
-# |                  - otherwise.
-# |        DD: Day
-# |        Mon: Month (calendar name)
-# |        YYYY: Year
-# |        hh: hour (24-hour format, the machine's timezone)
-# |        mm: minutes
-# |        ss: seconds
-# |        request: The first line of the HTTP request as sent by the client.
-# |        ddd: the status code returned by the server, - if not available.
-# |        bbbb: the total number of bytes sent,
-# |              *not including the HTTP/1.0 header*, - if not available
-# |
-# | You can determine the name of the file accessed through request.
-#
-# (Actually, the latter is only true if you know the server configuration
-# at the time the request was made!)
-
 __version__ = "0.6"
 
 __all__ = [
@@ -97,6 +15,7 @@ import http.client
 import io
 import itertools
 import gzip
+import json
 import mimetypes
 import os
 import posixpath
@@ -104,6 +23,7 @@ import select
 import shutil
 import socket
 import socketserver
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -706,20 +626,10 @@ class BaseHTTPRequestHandler(socketserver.StreamRequestHandler):
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
-    """Simple HTTP request handler with GET and HEAD commands.
-
-    This serves files from the current directory and any of its
-    subdirectories.  The MIME type for files is determined by
-    calling the .guess_type() method.
-
-    The GET and HEAD requests are identical except that the HEAD
-    request omits the actual contents of the file.
-
-    """
-
     server_version = "SimpleHTTP/" + __version__
     index_pages = ("index.html", "index.htm")
     cors = False
+    max_upload_size = 500 * 1024 * 1024  # 500 MB
     extensions_map = _encodings_map_default = {
         '.gz': 'application/gzip',
         '.Z': 'application/octet-stream',
@@ -734,7 +644,6 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         super().__init__(*args, **kwargs)
 
     def do_OPTIONS(self):
-        """Serve an OPTIONS request (CORS preflight)."""
         self.send_response(HTTPStatus.NO_CONTENT)
         self.end_headers()
 
@@ -746,7 +655,9 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
-        """Serve a GET request."""
+        if self.path in ('/terminal', '/terminal/'):
+            self._serve_terminal_page()
+            return
         f = self.send_head()
         if f:
             try:
@@ -754,11 +665,223 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             finally:
                 f.close()
 
+    def do_POST(self):
+        if self.path == '/terminal/exec':
+            self._exec_terminal_command()
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def do_PUT(self):
+        path = self.translate_path(self.path)
+        real_root = os.path.realpath(self.directory)
+        real_path = os.path.realpath(path)
+        if not real_path.startswith(real_root + os.sep) and real_path != real_root:
+            self.send_error(HTTPStatus.FORBIDDEN, "Outside served directory")
+            return
+        if os.path.isdir(path):
+            self.send_error(HTTPStatus.METHOD_NOT_ALLOWED, "Cannot PUT to a directory")
+            return
+        content_length = self.headers.get('Content-Length')
+        if content_length is None:
+            self.send_error(HTTPStatus.LENGTH_REQUIRED)
+            return
+            return
+        try:
+            length = int(content_length)
+        except ValueError:
+            self.send_error(HTTPStatus.BAD_REQUEST, "Invalid Content-Length")
+            return
+        if length < 0:
+            self.send_error(HTTPStatus.BAD_REQUEST, "Negative Content-Length")
+            return
+        if length > self.max_upload_size:
+            self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                            f"Max upload size is {self.max_upload_size} bytes")
+            return
+        fname = os.path.basename(path)
+        if any(ord(c) < 32 or ord(c) == 127 or c == '/' for c in fname):
+            self.send_error(HTTPStatus.BAD_REQUEST, "Invalid filename")
+            return
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as f:
+                if length:
+                    f.write(self.rfile.read(length))
+            self.send_response(HTTPStatus.CREATED)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+        except OSError as e:
+            self.send_error(HTTPStatus.FORBIDDEN, str(e))
+        except Exception as e:
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+
+    def do_DELETE(self):
+        path = self.translate_path(self.path)
+        real_root = os.path.realpath(self.directory)
+        real_path = os.path.realpath(path)
+        if not real_path.startswith(real_root + os.sep) and real_path != real_root:
+            self.send_error(HTTPStatus.FORBIDDEN, "Outside served directory")
+            return
+        if real_path == real_root:
+            self.send_error(HTTPStatus.FORBIDDEN, "Cannot delete root directory")
+            return
+        if not os.path.exists(path) and not os.path.islink(path):
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.end_headers()
+        except OSError as e:
+            self.send_error(HTTPStatus.FORBIDDEN, str(e))
+
     def do_HEAD(self):
-        """Serve a HEAD request."""
+        if self.path in ('/terminal', '/terminal/'):
+            self._serve_terminal_page()
+            return
         f = self.send_head()
         if f:
             f.close()
+
+    TERMINAL_PAGE = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.min.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; color: #fff; font-family: 'JetBrains Mono', 'Courier New', monospace; }
+  #terminal { height: 100vh; padding: 8px; }
+  .bar { background: #111; border-bottom: 1px solid #333; padding: 6px 14px; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
+  .bar a { color: #0ae; text-decoration: none; font-size: 12px; }
+  .bar a:hover { text-decoration: underline; }
+  .warn{background:#221;color:#fc6;font-size:11px;padding:4px 14px;text-align:center;border-bottom:1px solid rgba(255,204,102,.15)}
+</style>
+</head>
+<body>
+<div class="bar">
+  <span>&#9654; Web Terminal — <span id="cwd">/</span></span>
+  <a href="/">&larr; Files</a>
+</div>
+<div class="warn">&#9888; All commands run on the server with your user privileges</div>
+<div id="terminal"></div>
+<script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.min.js"></script>
+<script>
+const term = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: '"JetBrains Mono","Courier New",monospace', theme: { background: '#000', foreground: '#fff', cursor: '#0ae' } });
+const fit = new FitAddon.FitAddon();
+term.loadAddon(fit);
+term.open(document.getElementById('terminal'));
+fit.fit();
+let cwd = '/';
+
+term.write('Welcome to Web Terminal\\r\\nType commands and press Enter.\\r\\n\\r\\n');
+term.prompt = () => { term.write('\\r\\n$ '); };
+term.prompt();
+
+term.onData(data => {
+  const code = data.charCodeAt(0);
+  if (code === 13) {
+    const cmd = term.buffer.active.getLine(term.buffer.active.cursorY)?.translateToString().trim();
+    const promptIdx = cmd?.lastIndexOf('$ ');
+    const actual = promptIdx >= 0 ? cmd.slice(promptIdx + 2).trim() : '';
+    if (!actual) { term.prompt(); return; }
+    term.write('\\r\\n');
+    fetch('/terminal/exec', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: actual, cwd: cwd })
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (d.output) term.write(d.output.replace(/\\n/g, '\\r\\n'));
+      if (d.cwd) cwd = d.cwd;
+      if (d.error) term.write('\\r\\n\\x1b[31m' + d.error.replace(/\\n/g, '\\r\\n') + '\\x1b[0m');
+      term.prompt();
+    })
+    .catch(e => { term.write('\\r\\nError: ' + e.message.replace(/\\n/g, '\\r\\n')); term.prompt(); });
+  } else if (code === 127) {
+    term.write('\\b \\b');
+  } else {
+    term.write(data);
+  }
+});
+
+window.addEventListener('resize', () => fit.fit());
+</script>
+</body>
+</html>"""
+
+    def _serve_terminal_page(self):
+        data = self.TERMINAL_PAGE.encode('utf-8')
+        self.send_response(HTTPStatus.OK)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _exec_terminal_command(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length)
+            params = json.loads(body)
+            cmd = params.get('command', '').strip()
+            req_cwd = params.get('cwd', self.directory)
+        except Exception:
+            self._send_json({'output': '', 'error': 'Invalid request'})
+            return
+
+        if not cmd:
+            self._send_json({'output': '', 'error': '', 'cwd': req_cwd})
+            return
+
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=req_cwd,
+                timeout=30,
+            )
+            out = result.stdout
+            err = result.stderr
+            if result.returncode != 0 and not err:
+                err = f'exit code {result.returncode}'
+            # Update cwd if cd was in the command
+            new_cwd = req_cwd
+            if cmd.startswith('cd '):
+                target = cmd[3:].strip()
+                try:
+                    expanded = os.path.expanduser(target)
+                    if os.path.isabs(expanded):
+                        new_cwd = expanded
+                    else:
+                        new_cwd = os.path.normpath(os.path.join(req_cwd, expanded))
+                except Exception:
+                    pass
+            self._send_json({'output': out, 'error': err, 'cwd': new_cwd})
+        except subprocess.TimeoutExpired:
+            self._send_json({'output': '', 'error': 'Command timed out (30s)'})
+        except Exception as e:
+            self._send_json({'output': '', 'error': str(e)})
+
+    def _send_json(self, data):
+        body = json.dumps(data).encode('utf-8')
+        self.send_response(HTTPStatus.OK)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def send_head(self):
         """Common code for GET and HEAD commands.
@@ -972,9 +1095,9 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
                     '.mp3': '🎵', '.wav': '🎵', '.flac': '🎵', '.ogg': '🎵',
                     '.pdf': '📑',
                     '.sh': '💻',
-                    '.yml': '♙', '.yaml': '♙',
-                    '.toml': '♙',
-                    '.conf': '♙', '.cfg': '♙',
+                    '.yml': '⚙', '.yaml': '⚙',
+                    '.toml': '⚙',
+                    '.conf': '⚙', '.cfg': '⚙',
                     '.exe': '💠', '.msi': '💠',
                     '.ttf': '🖨', '.otf': '🖨', '.woff': '🖨', '.woff2': '🖨',
                     '.db': '💾', '.sqlite': '💾', '.sqlite3': '💾',
@@ -1044,6 +1167,24 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         if files:
             file_section = '<div class="section-label ani files">files</div>\n<div class="grid">\n' + '\n'.join(entry_html(e) for e in files) + '\n</div>\n'
 
+        if displaypath == '/':
+            breadcrumb_html = '<a href="/" class="path-part ani">~</a>'
+        else:
+            raw_path = self.path.split('#', 1)[0].split('?', 1)[0]
+            segs = raw_path.strip('/').split('/')
+            parts = ['<a href="/" class="path-part ani">~</a>']
+            cum = ''
+            for i, s in enumerate(segs):
+                label = html.escape(urllib.parse.unquote(s, errors='surrogatepass'), quote=False)
+                cum += '/' + s
+                last = i == len(segs) - 1
+                parts.append('<span class="path-sep ani">/</span>')
+                if last:
+                    parts.append(f'<span class="path-part active ani">{label}</span>')
+                else:
+                    parts.append(f'<a href="{html.escape(cum, quote=False)}" class="path-part ani">{label}</a>')
+            breadcrumb_html = ''.join(parts)
+
         styled = (
             '<!DOCTYPE HTML>\n<html lang="en">\n<head>\n'
             + '<meta charset="' + enc + '">\n'
@@ -1076,6 +1217,9 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             + '.back-link{display:inline-flex;align-items:center;gap:10px;color:#fff;text-decoration:none;font-size:13px;font-weight:400;letter-spacing:1px;text-transform:uppercase;margin-bottom:40px;padding:10px 20px;border:1px solid rgba(255,255,255,.15);border-radius:8px;transition:all .3s}'
             + '.back-link:hover{color:#fff;border-color:#fff;background:rgba(255,255,255,.03)}'
             + '.back-link .arr{font-size:18px}'
+            + '.up-btn{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#fff;cursor:pointer;padding:6px 14px;border:1px solid rgba(255,255,255,.15);border-radius:6px;background:none;transition:all .3s;letter-spacing:.5px;margin-left:auto}'
+            + '.up-btn:hover{border-color:#fff;background:rgba(255,255,255,.03)}'
+            + '.up-btn svg{width:14px;height:14px;fill:currentColor}'
             + '.content{position:relative;z-index:1;padding:0 48px 80px;max-width:1400px;margin:0 auto}'
             + '.section-label{font-size:11px;font-weight:500;color:#fff;letter-spacing:3px;text-transform:uppercase;margin-bottom:16px;padding-left:4px}'
             + '.section-label.folders{margin-top:0}'
@@ -1125,12 +1269,26 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             + '<div class="stats-bar ani">'
             + '<span>' + str(dir_count) + ' <span class="num">folder' + ('' if dir_count == 1 else 's') + '</span></span>'
             + '<span>' + str(file_count) + ' <span class="num">file' + ('' if file_count == 1 else 's') + '</span></span>'
+            + '<button class="up-btn ani" onclick="document.getElementById(\'fu\').click()">'
+            + '<svg viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg> upload'
+            + '</button>'
+            + '<input type="file" id="fu" multiple style="display:none" onchange="uploadFiles(this.files)">'
             + '</div>\n'
             + '</div>\n'
+            + '<script>'
+            + 'function uploadFiles(files){'
+            + 'var ok=0,fail=0;'
+            + 'Promise.all([].map.call(files,function(f){'
+            + 'return fetch(f.name,{method:"PUT",body:f})'
+            + '.then(function(r){if(r.ok){ok++}else{fail++;return r.text().then(function(t){throw t})}})'
+            + '.catch(function(e){fail++;console.error(f.name,e)})'
+            + '})).then(function(){if(fail)alert(ok+" uploaded, "+fail+" failed");else if(ok)location.reload()})'
+            + '}'
+            + '</script>\n'
             + '<div class="path-area">\n'
             + '<div class="path-label ani">location</div>\n'
             + '<div class="path-row">'
-            + '<a href="/" class="path-part ani">~</a>'
+            + breadcrumb_html
             + '</div>\n'
             + '</div>\n'
             + back_link
@@ -1685,7 +1843,7 @@ if __name__ == '__main__':
     else:
         handler_class = SimpleHTTPRequestHandler
 
-    if getattr(args, 'cors', False):
+    if args.cors:
         handler_class.cors = True
 
     # ensure dual-stack is not disabled; ref #38907

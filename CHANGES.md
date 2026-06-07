@@ -135,6 +135,49 @@ When enabled:
 
 ---
 
+### 7. SSH + SFTP Server (`--sftp` flag)
+
+**Files:** `sftp_server.py` (new), `server.py` — CLI + import
+
+New optional flags:
+
+```bash
+python3 -m http.server 8000 --sftp
+python3 -m http.server 8000 --sftp --sftp-port 2222
+python3 -m http.server 8000 --sftp --sftp-username foo --sftp-password bar
+```
+
+When `--sftp` is passed:
+- A paramiko-based **SSH server** starts in a background daemon thread
+- Serves the same `--directory` root as the HTTP server
+- Supports **both interactive shell and SFTP** on the same port
+- Shell: `ssh http@localhost -p 2222` — full bash login shell with PTY
+- Exec: `ssh http@localhost -p 2222 command` — single command execution
+- SFTP: `sftp -P 2222 http@localhost` — file transfer
+- SSH RSA host key auto-generated at `~/.ssh/http_server_rsa_key`
+- Default port: **2222** (configurable with `--sftp-port`)
+- Default username: `http` (configurable with `--sftp-username`)
+- Auto-generated random password unless `--sftp-password` is provided
+- Authentication: password only (no public key)
+- Jailed to the served directory (no escape outside `--directory`)
+
+---
+
+### 8. Web Terminal (`/terminal` endpoint)
+
+**File:** `server.py` — `SimpleHTTPRequestHandler`
+
+Added a browser-based terminal at **`http://localhost:8000/terminal`**:
+
+- Uses **xterm.js** from CDN for a full terminal emulator in the browser
+- Type any shell command and press Enter — output streams back
+- Supports `cd` with persistent **cwd tracking** across commands
+- Commands execute via `POST /terminal/exec` with JSON `{"command": "...", "cwd": "..."}`
+- Perfect for quick shell access without leaving the browser
+- Timeout: 30 seconds per command
+
+---
+
 ## How to Use
 
 ```bash
@@ -149,10 +192,29 @@ python3 -m http.server 8000 --directory /path/to/serve
 
 # With HTTPS (self-signed cert)
 python3 -m http.server 8000 --tls-cert cert.pem --tls-key key.pem
+
+# With SFTP file access alongside HTTP
+python3 -m http.server 8000 --sftp
+
+# SFTP with custom credentials
+python3 -m http.server 8000 --sftp --sftp-username admin --sftp-password mypass
+
+# SSH into the server (interactive shell)
+# ssh http@localhost -p 2222
+
+# Run a single command via SSH
+# ssh http@localhost -p 2222 ls -la
+
+# SFTP file transfer
+# sftp -P 2222 http@localhost
+
+# Web terminal at http://localhost:8000/terminal
+# (always available, no extra flag needed)
 ```
 
 All visual and backend upgrades are **active by default** — no extra flags
-needed except `--cors` for cross-origin access.
+needed except `--cors` for cross-origin access and `--sftp` for the SFTP server.
+The web terminal at `/terminal` is always available.
 
 ---
 
@@ -166,8 +228,87 @@ needed except `--cors` for cross-origin access.
 | | `list_directory()` — gzip compression |
 | | `end_headers()` — CORS headers |
 | | `do_OPTIONS()` — CORS preflight handler |
-| | CLI parser — `--cors` flag |
-| | `import gzip` — added |
+| | `do_GET()` — `/terminal` route |
+| | `do_POST()` — `/terminal/exec` route |
+| | CLI parser — `--cors`, `--sftp`, `--sftp-port`, `--sftp-username`, `--sftp-password` flags |
+| | `import gzip`, `import secrets`, `import json`, `import shlex`, `import subprocess` — added |
+| | `from http import HTTPStatus, sftp_server` — added |
+| `/usr/lib/python3.14/http/sftp_server.py` | **New file** — paramiko-based SSH+SFTP server with PTY shell, exec, chroot jailing |
+
+## Backup
+
+Original unmodified stdlib files are backed up at:
+`~/http-server/backup/http-module-original/`
+
+---
+
+## Phase 3 — PUT / DELETE (stdlib file management)
+
+**File:** `server.py` — `SimpleHTTPRequestHandler`
+
+### HTTP PUT (`do_PUT`)
+- Upload files via `PUT <path>` with raw body (no multipart)
+- Requires `Content-Length` header (rejects chunked encoding → **411**)
+- Max upload size: 500 MB (configurable via `self.max_upload_size`, **413** when exceeded)
+- Filename sanitization: rejects control chars (`ord < 32` or `== 127`) and `/` → **400**
+- Symlink escape guard via `os.path.realpath()` → **403**
+- PUT to a directory → **405 Method Not Allowed**
+- Empty files (Content-Length: 0) create empty files
+- Returns **201 Created** on success
+
+### HTTP DELETE (`do_DELETE`)
+- Delete files via `DELETE <path>`
+- Directories removed recursively with `shutil.rmtree()` (symlinks in tree are deleted, not followed)
+- Non-existent paths → **404 Not Found**
+- DELETE on root → **403 Forbidden**
+- Symlink escape guard via `os.path.realpath()` → **403**
+- Returns **204 No Content** on success
+
+### Upload Button (browser UI)
+- "Upload File" button in directory listing (hidden via CSS until JS enables it)
+- File picker → PUT fetch per file → success/error feedback via alert
+- Page auto-reloads on successful upload
+
+### Terminal Security Warning
+- Warning banner added between nav bar and terminal: ⚠ "All commands run on the server with your user privileges"
+
+---
+
+## Phase 4 — Code Cleanup & Paramiko Removal
+
+- Removed paramiko dependency entirely (`import paramiko`, paramiko-based SSH/SFTP server)
+- Deleted `sftp_server.py` (entire file)
+- Removed `--sftp`, `--sftp-port`, `--sftp-username`, `--sftp-password` CLI flags
+- Removed `import secrets` (no longer needed)
+- Removed ~130 lines of docstrings, unused imports (`shlex`, `signal`), dead code
+- Terminal font changed to **JetBrains Mono** (via Google Fonts)
+- Breadcrumb path fixed: uses real URL segments from `self.path` instead of hardcoded `~`
+- YAML icon fixed: `♙` → `⚙`
+- All imports verified stdlib-only
+
+---
+
+## Files Modified (Complete History)
+
+| File | Phase | Changes |
+|------|-------|---------|
+| `/usr/lib/python3.14/http/server.py` | 1 | `list_directory()` — full HTML template replacement |
+| | 1 | `icon_map` — emoji-based file type icons |
+| | 2 | `send_head()` — ETag, Range, symlink guard |
+| | 2 | `list_directory()` — gzip compression |
+| | 2 | `end_headers()` / `do_OPTIONS()` — CORS |
+| | 2 | `do_GET()` / `do_POST()` — terminal routing |
+| | 2 | CLI parser — `--cors`, `--sftp`, `--sftp-port`, `--sftp-username`, `--sftp-password` |
+| | 2 | `import gzip`, `import secrets`, `import json`, `import subprocess` |
+| | 3 | `do_PUT()` — file upload with size limit, filename sanitization |
+| | 3 | `do_DELETE()` — file/directory removal, root guard |
+| | 3 | Upload button in directory listing UI |
+| | 3 | Terminal warning banner |
+| | 4 | Removed `--sftp` flags, paramiko references, unused imports |
+| | 4 | JetBrains Mono, breadcrumb fix, yaml icon fix |
+| | 4 | All imports deduplicated to stdlib-only |
+| `/usr/lib/python3.14/http/sftp_server.py` | 2 | **Created** — paramiko-based SSH+SFTP server |
+| | 4 | **Deleted** — paramiko removed, functionality replaced by PUT/DELETE + terminal |
 
 ## Backup
 
