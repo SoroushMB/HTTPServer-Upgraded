@@ -705,15 +705,28 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, 'wb') as f:
-                if length:
-                    f.write(self.rfile.read(length))
+                remaining = length
+                while remaining > 0:
+                    buf = self.rfile.read(min(remaining, 65536))
+                    if not buf:
+                        f.close()
+                        os.remove(path)
+                        return
+                    f.write(buf)
+                    remaining -= len(buf)
             self.send_response(HTTPStatus.CREATED)
             self.send_header('Content-Length', '0')
             self.end_headers()
-        except OSError as e:
-            self.send_error(HTTPStatus.FORBIDDEN, str(e))
-        except Exception as e:
-            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+        except OSError:
+            try:
+                self.send_error(HTTPStatus.FORBIDDEN, "Upload failed")
+            except OSError:
+                pass
+        except Exception:
+            try:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Upload error")
+            except OSError:
+                pass
 
     def do_DELETE(self):
         path = self.translate_path(self.path)
@@ -1359,20 +1372,10 @@ window.addEventListener('resize', () => fit.fit());
         return path
 
     def copyfile(self, source, outputfile):
-        """Copy all data between two file objects.
-
-        The SOURCE argument is a file object open for reading
-        (or anything with a read() method) and the DESTINATION
-        argument is a file object open for writing (or
-        anything with a write() method).
-
-        The only reason for overriding this would be to change
-        the block size or perhaps to replace newlines by CRLF
-        -- note however that this the default server uses this
-        to copy binary data as well.
-
-        """
-        shutil.copyfileobj(source, outputfile)
+        try:
+            shutil.copyfileobj(source, outputfile)
+        except OSError:
+            pass
 
     def guess_type(self, path):
         """Guess the type of a file.
