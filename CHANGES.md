@@ -345,3 +345,28 @@ experience. Only `--cors` is optional for cross-origin access.
 
 Original unmodified stdlib files are backed up at:
 `~/http-server/backup/http-module-original/`
+
+## Phase 6 — Algorithmic Optimizations
+
+### 1. `icon_map` moved to class-level constant
+Was rebuilt from scratch (31 dict entries) on every `list_directory()` call.
+Now defined once as `SimpleHTTPRequestHandler.icon_map`.
+
+### 2. `entry_html()` called 1× instead of 3× per file
+Removed unused `entries_html` list comprehension (line 1165). The `entry_html()` helper was previously invoked 3 times per entry — once in the unused list, once in `dir_section`, once in `file_section`. Now only the two needed calls remain.
+
+### 3. `lambda a: a.lower()` → `str.lower`
+Avoid creating a new function object per directory listing.
+
+### 4. `import time as _time` removed from inner `date_str()`
+`time` is already imported at module level. The local import was redundant.
+
+### 5. Terminal JSON body size capped at 65 KB
+`POST /terminal/exec` now rejects `Content-Length > 65536` before parsing,
+preventing a memory exhaustion vector.
+
+| Files Modified | Phase | Change |
+|----------------|-------|--------|
+| `server.py` | 6 | `icon_map` moved to class constant |
+| | 6 | `entry_html` 3×→1×, `str.lower` sort, `time` import fix |
+| | 6 | Terminal JSON body size limit (65 KB) |

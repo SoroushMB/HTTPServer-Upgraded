@@ -636,6 +636,37 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         '.bz2': 'application/x-bzip2',
         '.xz': 'application/x-xz',
     }
+    icon_map = {
+        '.html': '🌐', '.htm': '🌐',
+        '.css': '🎨',
+        '.js': '⚡',
+        '.py': '🐍',
+        '.json': '📋',
+        '.txt': '📝',
+        '.md': '📖', '.rst': '📖',
+        '.xml': '📰',
+        '.png': '🖼', '.jpg': '🖼', '.jpeg': '🖼',
+        '.gif': '📹',
+        '.svg': '📐',
+        '.ico': '🪟',
+        '.zip': '📦', '.tar': '📦', '.gz': '📦',
+        '.mp4': '🎬', '.mkv': '🎬', '.avi': '🎬', '.mov': '🎬',
+        '.mp3': '🎵', '.wav': '🎵', '.flac': '🎵', '.ogg': '🎵',
+        '.pdf': '📑',
+        '.sh': '💻',
+        '.yml': '⚙', '.yaml': '⚙',
+        '.toml': '⚙',
+        '.conf': '⚙', '.cfg': '⚙',
+        '.exe': '💠', '.msi': '💠',
+        '.ttf': '🖨', '.otf': '🖨', '.woff': '🖨', '.woff2': '🖨',
+        '.db': '💾', '.sqlite': '💾', '.sqlite3': '💾',
+        '.iso': '💿', '.img': '💿',
+        '.deb': '📦', '.rpm': '📦',
+        '.log': '📜',
+        '.key': '🔑', '.pem': '🔑', '.crt': '🔑',
+        '.lock': '🔒',
+        '.dockerfile': '🐳',
+    }
 
     def __init__(self, *args, directory=None, **kwargs):
         if directory is None:
@@ -845,6 +876,9 @@ window.addEventListener('resize', () => fit.fit());
     def _exec_terminal_command(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
+            if length > 65536:
+                self._send_json({'output': '', 'error': 'Request too large'})
+                return
             body = self.rfile.read(length)
             params = json.loads(body)
             cmd = params.get('command', '').strip()
@@ -1052,7 +1086,7 @@ window.addEventListener('resize', () => fit.fit());
                 HTTPStatus.NOT_FOUND,
                 "No permission to list directory")
             return None
-        listing.sort(key=lambda a: a.lower())
+        listing.sort(key=str.lower)
         displaypath = self.path
         displaypath = displaypath.split('#', 1)[0]
         displaypath = displaypath.split('?', 1)[0]
@@ -1065,7 +1099,6 @@ window.addEventListener('resize', () => fit.fit());
         enc = sys.getfilesystemencoding()
         title = 'Directory listing for ' + displaypath
 
-        entries_html = []
         dirs = []
         files = []
         for name in listing:
@@ -1089,39 +1122,7 @@ window.addEventListener('resize', () => fit.fit());
                 dirs.append(entry)
             else:
                 entry['cls'] = 'file'
-                ext = os.path.splitext(name)[1].lower()
-                icon_map = {
-                    '.html': '🌐', '.htm': '🌐',
-                    '.css': '🎨',
-                    '.js': '⚡',
-                    '.py': '🐍',
-                    '.json': '📋',
-                    '.txt': '📝',
-                    '.md': '📖', '.rst': '📖',
-                    '.xml': '📰',
-                    '.png': '🖼', '.jpg': '🖼', '.jpeg': '🖼',
-                    '.gif': '📹',
-                    '.svg': '📐',
-                    '.ico': '🪟',
-                    '.zip': '📦', '.tar': '📦', '.gz': '📦',
-                    '.mp4': '🎬', '.mkv': '🎬', '.avi': '🎬', '.mov': '🎬',
-                    '.mp3': '🎵', '.wav': '🎵', '.flac': '🎵', '.ogg': '🎵',
-                    '.pdf': '📑',
-                    '.sh': '💻',
-                    '.yml': '⚙', '.yaml': '⚙',
-                    '.toml': '⚙',
-                    '.conf': '⚙', '.cfg': '⚙',
-                    '.exe': '💠', '.msi': '💠',
-                    '.ttf': '🖨', '.otf': '🖨', '.woff': '🖨', '.woff2': '🖨',
-                    '.db': '💾', '.sqlite': '💾', '.sqlite3': '💾',
-                    '.iso': '💿', '.img': '💿',
-                    '.deb': '📦', '.rpm': '📦',
-                    '.log': '📜',
-                    '.key': '🔑', '.pem': '🔑', '.crt': '🔑',
-                    '.lock': '🔒',
-                    '.dockerfile': '🐳',
-                }
-                entry['icon'] = icon_map.get(ext, '📄')
+                entry['icon'] = self.icon_map.get(os.path.splitext(name)[1].lower(), '📄')
                 files.append(entry)
             if os.path.islink(fullname):
                 entry['display'] += '@'
@@ -1138,8 +1139,7 @@ window.addEventListener('resize', () => fit.fit());
                 return f'{s/(1024*1024*1024):.1f} GB'
 
         def date_str(ts):
-            import time as _time
-            return _time.strftime('%b %d %H:%M', _time.localtime(ts))
+            return time.strftime('%b %d %H:%M', time.localtime(ts))
 
         def entry_html(e):
             size_display = ''
@@ -1160,9 +1160,6 @@ window.addEventListener('resize', () => fit.fit());
                 + '</span>'
                 + '</a>'
             )
-
-        all_entries = dirs + files
-        entries_html = [entry_html(e) for e in all_entries]
 
         dir_count = len(dirs)
         file_count = len(files)
