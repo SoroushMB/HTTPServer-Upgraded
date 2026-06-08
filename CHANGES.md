@@ -370,3 +370,23 @@ preventing a memory exhaustion vector.
 | `server.py` | 6 | `icon_map` moved to class constant |
 | | 6 | `entry_html` 3×→1×, `str.lower` sort, `time` import fix |
 | | 6 | Terminal JSON body size limit (65 KB) |
+
+## Phase 7 — Directory Creation, Rename, Search, Sort, Preview
+
+| Feature | Implementation | Details |
+|---------|---------------|---------|
+| **MKCOL** | `do_MKCOL()` handler | Creates directory via `os.mkdir()`, symlink escape guard, returns 201 |
+| **MOVE** | `do_MOVE()` handler | Renames via `Destination` header + `os.rename()`, escape guard, returns 204 |
+| **Search** | Client-side JS `filterList()` | Text input filters `.entry-wrap` by `data-name`, updates visible counts |
+| **Sort** | Client-side JS `sortBy()` | Click name/size/date toggles asc/desc, reorders DOM |
+| **Preview** | Client-side JS lightbox | Click images (.png/.jpg/.gif/.svg) shows overlay, videos (.mp4/.webm) play inline |
+| **Rename UI** | Inline rename button on hover | `✎` button → dialog → MOVE fetch → reload |
+
+| Files Modified | Phase | Change |
+|----------------|-------|--------|
+| `server.py` | 7 | `do_MKCOL()` — directory creation |
+| | 7 | `do_MOVE()` — file/directory rename |
+| | 7 | `entry_html()` — data-name/size/mtime/ext attrs, rename button |
+| | 7 | CSS — search, sort, lightbox, rename overlay styles |
+| | 7 | HTML — filter input, sort buttons, lightbox/rename overlays |
+| | 7 | JS — filterList, sortBy, renderEntries, openPreview, rename handlers |

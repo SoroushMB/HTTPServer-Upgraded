@@ -790,6 +790,51 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         if f:
             f.close()
 
+    def do_MOVE(self):
+        path = self.translate_path(self.path)
+        real_root = os.path.realpath(self.directory)
+        real_path = os.path.realpath(path)
+        if not real_path.startswith(real_root + os.sep) and real_path != real_root:
+            self.send_error(HTTPStatus.FORBIDDEN, "Outside served directory")
+            return
+        if not os.path.exists(path) and not os.path.islink(path):
+            self.send_error(HTTPStatus.NOT_FOUND, "Source not found")
+            return
+        dest_header = self.headers.get('Destination')
+        if not dest_header:
+            self.send_error(HTTPStatus.BAD_REQUEST, "Missing Destination header")
+            return
+        dest_path = urllib.parse.urlsplit(dest_header).path
+        dest_path = self.translate_path(dest_path)
+        real_dest = os.path.realpath(dest_path)
+        if not real_dest.startswith(real_root + os.sep) and real_dest != real_root:
+            self.send_error(HTTPStatus.FORBIDDEN, "Destination outside served directory")
+            return
+        try:
+            os.rename(path, dest_path)
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.end_headers()
+        except OSError as e:
+            self.send_error(HTTPStatus.FORBIDDEN, str(e))
+
+    def do_MKCOL(self):
+        path = self.translate_path(self.path)
+        real_root = os.path.realpath(self.directory)
+        real_path = os.path.realpath(path)
+        if not real_path.startswith(real_root + os.sep) and real_path != real_root:
+            self.send_error(HTTPStatus.FORBIDDEN, "Outside served directory")
+            return
+        if os.path.exists(path):
+            self.send_error(HTTPStatus.METHOD_NOT_ALLOWED, "Path already exists")
+            return
+        try:
+            os.mkdir(path)
+            self.send_response(HTTPStatus.CREATED)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+        except OSError as e:
+            self.send_error(HTTPStatus.FORBIDDEN, str(e))
+
     TERMINAL_PAGE = """\
 <!DOCTYPE html>
 <html lang="en">
@@ -1150,8 +1195,14 @@ window.addEventListener('resize', () => fit.fit());
                 date_display = date_str(e['mtime'])
             link = html.escape(urllib.parse.quote(e['link'], errors='surrogatepass'), quote=False)
             display = e['display']
+            dname = html.escape(urllib.parse.quote(e['name'], errors='surrogatepass'), quote=False)
+            attrs = f' data-name="{html.escape(e["name"].lower(), quote=True)}" data-size="{e["size"]}" data-mtime="{e["mtime"]}"'
+            if e['cls'] == 'file':
+                _, ext = os.path.splitext(e['name'])
+                attrs += f' data-ext="{ext.lower()}"'
             return (
-                '<a class="entry ani ' + e['cls'] + '" href="' + link + '">'
+                '<div class="entry-wrap">'
+                + '<a class="entry ani ' + e['cls'] + '" href="' + link + '"' + attrs + '>'
                 + '<span class="icon">' + e['icon'] + '</span>'
                 + '<span class="name">' + display + '</span>'
                 + '<span class="meta">'
@@ -1159,6 +1210,8 @@ window.addEventListener('resize', () => fit.fit());
                 + ('<span class="mtime">' + date_display + '</span>' if date_display else '')
                 + '</span>'
                 + '</a>'
+                + '<button class="rn-btn" onclick="rename(this,\'' + dname + '\')" title="rename">✎</button>'
+                + '</div>'
             )
 
         dir_count = len(dirs)
@@ -1262,6 +1315,33 @@ window.addEventListener('resize', () => fit.fit());
             + '.decor-dot-5{bottom:35%;left:40%}'
             + '.decor-dot-6{top:45%;right:25%}'
             + '@media(max-width:768px){.header{padding:30px 20px 0}.content{padding:0 20px 80px}.top{flex-direction:column;align-items:flex-start;gap:16px}.grid{grid-template-columns:1fr}.path-part{font-size:20px}.entry .meta{opacity:1;font-size:10px}}'
+            + '.entry-wrap{position:relative}.entry-wrap:hover .rn-btn{opacity:1}'
+            + '.rn-btn{position:absolute;top:6px;right:6px;opacity:0;background:rgba(255,255,255,.1);border:none;color:#fff;cursor:pointer;font-size:13px;padding:2px 6px;border-radius:4px;transition:opacity .2s;z-index:2;line-height:1}'
+            + '.rn-btn:hover{background:rgba(255,255,255,.2)}'
+            + '.search-bar{display:flex;gap:8px;align-items:center;width:200px;position:relative}'
+            + '.search-bar input{width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:6px;padding:6px 10px;color:#fff;font-size:12px;font-family:inherit;outline:none;transition:border-color .2s}'
+            + '.search-bar input:focus{border-color:rgba(255,255,255,.3)}'
+            + '.search-bar input::placeholder{color:rgba(255,255,255,.3)}'
+            + '.sort-btn{font-size:11px;color:rgba(255,255,255,.4);cursor:pointer;padding:6px 0;letter-spacing:1px;text-transform:uppercase;background:none;border:none;font-family:inherit;transition:color .2s;font-weight:500}'
+            + '.sort-btn:hover{color:rgba(255,255,255,.7)}'
+            + '.sort-btn.active{color:#fff}'
+            + '.sort-btn .arrow{display:inline-block;width:10px;text-align:right}'
+            + '.lightbox{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.92);display:none;justify-content:center;align-items:center;cursor:pointer}'
+            + '.lightbox.open{display:flex}'
+            + '.lightbox img,.lightbox video{max-width:90vw;max-height:90vh;object-fit:contain;border-radius:4px}'
+            + '.lightbox .close{position:absolute;top:20px;right:30px;font-size:28px;color:#fff;cursor:pointer;opacity:.6;transition:opacity .2s;background:none;border:none;font-family:inherit}'
+            + '.lightbox .close:hover{opacity:1}'
+            + '.rn-overlay{position:fixed;inset:0;z-index:99;background:rgba(0,0,0,.7);display:none;justify-content:center;align-items:center}'
+            + '.rn-overlay.open{display:flex}'
+            + '.rn-dialog{background:#1a1a1a;border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:24px;min-width:300px}'
+            + '.rn-dialog h3{margin:0 0 12px;font-size:14px;font-weight:400;color:#fff}'
+            + '.rn-dialog input{width:100%;padding:8px 10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:6px;color:#fff;font-size:13px;font-family:inherit;outline:none;margin-bottom:12px}'
+            + '.rn-dialog input:focus{border-color:rgba(255,255,255,.3)}'
+            + '.rn-dialog .btns{display:flex;gap:8px;justify-content:flex-end}'
+            + '.rn-dialog button{padding:6px 16px;border-radius:6px;border:1px solid rgba(255,255,255,.15);background:none;color:#fff;cursor:pointer;font-size:12px;font-family:inherit;transition:all .2s}'
+            + '.rn-dialog button:hover{border-color:#fff;background:rgba(255,255,255,.06)}'
+            + '.rn-dialog .ok{border-color:#0ae;color:#0ae}'
+            + '@media(max-width:768px){.search-bar{width:100%}}'
             + '</style>\n</head>\n<body>\n'
             + '<div class="decor">'
             + '<div class="decor-line decor-line-1"></div>'
@@ -1283,6 +1363,10 @@ window.addEventListener('resize', () => fit.fit());
             + '<svg viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg> upload'
             + '</button>'
             + '<input type="file" id="fu" multiple style="display:none" onchange="uploadFiles(this.files)">'
+            + '<div class="search-bar ani"><input type="text" id="filter" placeholder="filter..." oninput="filterList(this.value)"></div>'
+            + '<button class="sort-btn ani active" data-sort="name" onclick="sortBy(\'name\')">name<span class="arrow">▲</span></button>'
+            + '<button class="sort-btn ani" data-sort="size" onclick="sortBy(\'size\')">size<span class="arrow"></span></button>'
+            + '<button class="sort-btn ani" data-sort="mtime" onclick="sortBy(\'mtime\')">date<span class="arrow"></span></button>'
             + '</div>\n'
             + '</div>\n'
             + '<script>'
@@ -1308,13 +1392,72 @@ window.addEventListener('resize', () => fit.fit());
             + file_section
             + ('<div class="empty-state ani">empty directory</div>' if not dirs and not files else '')
             + '</div>\n'
-            + '<script>function _s(){var e=document.querySelectorAll(".ani");for(var i=0;i<e.length;i++)e[i].style.opacity="1"}setTimeout(_s,2500);document.addEventListener("DOMContentLoaded",function(){if(typeof gsap==="undefined")_s()});</script>\n'
+            + '<div class="lightbox" id="lb" onclick="closeLB()"><button class="close" onclick="closeLB()">&times;</button><img id="lbi" src="" alt=""><video id="lbv" src="" controls onclick="event.stopPropagation()"></video></div>\n'
+            + '<div class="rn-overlay" id="rno"><div class="rn-dialog"><h3>rename</h3><input type="text" id="rni" onkeydown="if(event.key==\'Enter\')doRename()"><div class="btns"><button onclick="closeRN()">cancel</button><button class="ok" onclick="doRename()">rename</button></div></div></div>\n'
             + '<script>'
+            + 'var entries=[],sortField="name",sortAsc=true;'
+            + 'function _s(){var e=document.querySelectorAll(".ani");for(var i=0;i<e.length;i++)e[i].style.opacity="1"}'
+            + 'setTimeout(_s,2500);document.addEventListener("DOMContentLoaded",function(){if(typeof gsap==="undefined")_s()});'
             + 'gsap.config({nullTargetWarn:false});'
             + 'gsap.to(".logo,.stats-bar",{opacity:1,y:0,duration:.6,ease:"power2.out"});'
             + 'gsap.to(".path-label,.path-part,.back-link",{opacity:1,y:0,duration:.6,stagger:.08,ease:"power2.out",delay:.2});'
             + 'gsap.to(".section-label",{opacity:1,x:0,duration:.4,ease:"power2.out",delay:.4});'
-            + 'gsap.to(".entry",{opacity:1,y:0,scale:1,duration:.5,stagger:.03,ease:"power3.out",delay:.5,onComplete:function(){gsap.set(".entry",{clearProps:"transform"})}});'
+            + 'gsap.to(".entry",{opacity:1,y:0,scale:1,duration:.5,stagger:.03,ease:"power3.out",delay:.5,onComplete:function(){gsap.set(".entry",{clearProps:"transform"});initEntries()}});'
+            + 'function initEntries(){'
+            + 'entries=[];document.querySelectorAll(".entry").forEach(function(e){'
+            + 'entries.push({el:e.parentElement,el2:e,name:(e.getAttribute("data-name")||""),size:parseInt(e.getAttribute("data-size"))||0,mtime:parseInt(e.getAttribute("data-mtime"))||0,ext:e.getAttribute("data-ext")||""});'
+            + 'e.addEventListener("click",function(ev){'
+            + 'var ext=this.getAttribute("data-ext");'
+            + 'if(ext&&(ext===".png"||ext===".jpg"||ext===".jpeg"||ext===".gif"||ext===".svg"||ext===".mp4"||ext===".webm"||ext===".mkv"||ext===".mov")){'
+            + 'ev.preventDefault();openPreview(this.getAttribute("href"),ext)}'
+            + '})'
+            + '});'
+            + 'renderEntries()}'
+            + 'function filterList(v){v=v.toLowerCase();document.querySelectorAll(".entry-wrap").forEach(function(e){e.style.display=e.querySelector(".entry").getAttribute("data-name").includes(v)?"":"none"});updateCounts()}'
+            + 'function updateCounts(){'
+            + 'var vis=document.querySelectorAll(\'.entry-wrap:not([style*="display:none"])\').length;'
+            + 'var els=document.querySelectorAll(".entry-wrap").length;'
+            + 'document.querySelector(".stats-bar span:first-child .num").textContent=document.querySelectorAll(\'.entry-wrap:not([style*="display:none"]) .entry.dir\').length+" folder";'
+            + 'document.querySelector(".stats-bar span:nth-child(2) .num").textContent=vis+" file"}'
+            + 'function sortBy(field){'
+            + 'if(sortField===field){sortAsc=!sortAsc}else{sortField=field;sortAsc=true}'
+            + 'document.querySelectorAll(".sort-btn").forEach(function(b){b.classList.toggle("active",b.getAttribute("data-sort")===field)});'
+            + 'document.querySelectorAll(".sort-btn .arrow").forEach(function(a){a.textContent=""});'
+            + 'var btn=document.querySelector(\'.sort-btn[data-sort="\'+field+\'"]\');if(btn)btn.querySelector(".arrow").textContent=sortAsc?"▲":"▼";'
+            + 'renderEntries()}'
+            + 'function renderEntries(){'
+            + 'var c=document.querySelector(".content");'
+            + 'var dirs=[],files=[];'
+            + 'entries.forEach(function(e){if(e.el2.classList.contains("dir"))dirs.push(e);else files.push(e)});'
+            + 'function cmp(a,b){var va=a[sortField],vb=b[sortField];if(typeof va==="string")va=va.toLowerCase(),vb=vb.toLowerCase();return va<vb?-1:va>vb?1:0}'
+            + 'var fn=sortAsc?cmp:function(a,b){return -cmp(a,b)};'
+            + 'dirs.sort(fn);files.sort(fn);'
+            + 'var sorted=dirs.concat(files);var parent=c;'
+            + 'entries.forEach(function(e,i){parent.appendChild(e.el)});'
+            + 'updateCounts()}'
+            + 'function openPreview(url,ext){'
+            + 'var lb=document.getElementById("lb"),img=document.getElementById("lbi"),vid=document.getElementById("lbv");'
+            + 'img.style.display="none";vid.style.display="none";'
+            + 'if(ext===".mp4"||ext===".webm"||ext===".mkv"||ext===".mov"){vid.style.display="";vid.src=url;vid.play()}'
+            + 'else{img.style.display="";img.src=url}'
+            + 'lb.classList.add("open")}'
+            + 'function closeLB(){var lb=document.getElementById("lb"),vid=document.getElementById("lbv");lb.classList.remove("open");vid.pause();vid.src=""}'
+            + 'var rnPath="";'
+            + 'function rename(btn,name){rnPath=name;document.getElementById("rni").value=name;document.getElementById("rno").classList.add("open");document.getElementById("rni").focus();document.getElementById("rni").select()}'
+            + 'function closeRN(){document.getElementById("rno").classList.remove("open")}'
+            + 'function doRename(){'
+            + 'var newName=document.getElementById("rni").value.trim();if(!newName||newName===rnPath){closeRN();return}'
+            + 'fetch("/"+encodeURIComponent(rnPath),{method:"MOVE",headers:{"Destination":"/"+encodeURIComponent(newName)}})'
+            + '.then(function(r){if(r.ok)location.reload();else return r.text().then(function(t){alert("rename failed: "+t)})})'
+            + '.catch(function(e){alert("rename error: "+e.message)});closeRN()}'
+            + 'function uploadFiles(files){'
+            + 'var ok=0,fail=0;'
+            + 'Promise.all([].map.call(files,function(f){'
+            + 'return fetch(f.name,{method:"PUT",body:f})'
+            + '.then(function(r){if(r.ok){ok++}else{fail++;return r.text().then(function(t){throw t})}})'
+            + '.catch(function(e){fail++;console.error(f.name,e)})'
+            + '})).then(function(){if(fail)alert(ok+" uploaded, "+fail+" failed");else if(ok)location.reload()})'
+            + '}'
             + '</script>\n'
             + '</body>\n</html>'
         )
