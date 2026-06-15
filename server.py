@@ -1197,13 +1197,17 @@ window.addEventListener('resize', () => fit.fit());
             display = e['display']
             dname = html.escape(urllib.parse.quote(e['name'], errors='surrogatepass'), quote=False)
             attrs = f' data-name="{html.escape(e["name"].lower(), quote=True)}" data-size="{e["size"]}" data-mtime="{e["mtime"]}"'
+            icon_html = '<span class="icon">' + e['icon'] + '</span>'
             if e['cls'] == 'file':
                 _, ext = os.path.splitext(e['name'])
-                attrs += f' data-ext="{ext.lower()}"'
+                ext = ext.lower()
+                attrs += f' data-ext="{ext}"'
+                if ext in ('.mp4', '.webm', '.mkv', '.mov'):
+                    icon_html = '<video class="vthumb" src="' + link + '" preload="metadata" playsinline muted></video>'
             return (
                 '<div class="entry-wrap">'
                 + '<a class="entry ani ' + e['cls'] + '" href="' + link + '"' + attrs + '>'
-                + '<span class="icon">' + e['icon'] + '</span>'
+                + icon_html
                 + '<span class="name">' + display + '</span>'
                 + '<span class="meta">'
                 + ('<span class="size">' + size_display + '</span>' if size_display else '')
@@ -1317,7 +1321,7 @@ window.addEventListener('resize', () => fit.fit());
             + '@media(max-width:768px){.header{padding:30px 20px 0}.content{padding:0 20px 80px}.top{flex-direction:column;align-items:flex-start;gap:16px}.grid{grid-template-columns:1fr}.path-part{font-size:20px}.entry .meta{opacity:1;font-size:10px}}'
             + '.entry-wrap{position:relative}.entry-wrap:hover .rn-btn{opacity:1}'
             + '.rn-btn{position:absolute;top:6px;right:6px;opacity:0;background:rgba(255,255,255,.1);border:none;color:#fff;cursor:pointer;font-size:13px;padding:2px 6px;border-radius:4px;transition:opacity .2s;z-index:2;line-height:1}'
-            + '.rn-btn:hover{background:rgba(255,255,255,.2)}'
+            + '.rn-btn:hover{background:rgba(255,255,255,.2)}.vthumb{width:44px;height:44px;object-fit:cover;border-radius:4px;display:block}'
             + '.search-bar{display:flex;gap:8px;align-items:center;width:200px;position:relative}'
             + '.search-bar input{width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:6px;padding:6px 10px;color:#fff;font-size:12px;font-family:inherit;outline:none;transition:border-color .2s}'
             + '.search-bar input:focus{border-color:rgba(255,255,255,.3)}'
