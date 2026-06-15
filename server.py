@@ -704,8 +704,8 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         path = self.translate_path(self.path)
-        real_root = os.path.realpath(self.directory)
-        real_path = os.path.realpath(path)
+        real_root = os.path.normcase(os.path.realpath(self.directory))
+        real_path = os.path.normcase(os.path.realpath(path))
         if not real_path.startswith(real_root + os.sep) and real_path != real_root:
             self.send_error(HTTPStatus.FORBIDDEN, "Outside served directory")
             return
@@ -761,8 +761,8 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         path = self.translate_path(self.path)
-        real_root = os.path.realpath(self.directory)
-        real_path = os.path.realpath(path)
+        real_root = os.path.normcase(os.path.realpath(self.directory))
+        real_path = os.path.normcase(os.path.realpath(path))
         if not real_path.startswith(real_root + os.sep) and real_path != real_root:
             self.send_error(HTTPStatus.FORBIDDEN, "Outside served directory")
             return
@@ -792,8 +792,8 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_MOVE(self):
         path = self.translate_path(self.path)
-        real_root = os.path.realpath(self.directory)
-        real_path = os.path.realpath(path)
+        real_root = os.path.normcase(os.path.realpath(self.directory))
+        real_path = os.path.normcase(os.path.realpath(path))
         if not real_path.startswith(real_root + os.sep) and real_path != real_root:
             self.send_error(HTTPStatus.FORBIDDEN, "Outside served directory")
             return
@@ -806,7 +806,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             return
         dest_path = urllib.parse.urlsplit(dest_header).path
         dest_path = self.translate_path(dest_path)
-        real_dest = os.path.realpath(dest_path)
+        real_dest = os.path.normcase(os.path.realpath(dest_path))
         if not real_dest.startswith(real_root + os.sep) and real_dest != real_root:
             self.send_error(HTTPStatus.FORBIDDEN, "Destination outside served directory")
             return
@@ -819,8 +819,8 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_MKCOL(self):
         path = self.translate_path(self.path)
-        real_root = os.path.realpath(self.directory)
-        real_path = os.path.realpath(path)
+        real_root = os.path.normcase(os.path.realpath(self.directory))
+        real_path = os.path.normcase(os.path.realpath(path))
         if not real_path.startswith(real_root + os.sep) and real_path != real_root:
             self.send_error(HTTPStatus.FORBIDDEN, "Outside served directory")
             return
@@ -988,8 +988,8 @@ window.addEventListener('resize', () => fit.fit());
         """
         path = self.translate_path(self.path)
         # Guard against symlink escape outside served directory
-        real_root = os.path.realpath(self.directory)
-        real_path = os.path.realpath(path)
+        real_root = os.path.normcase(os.path.realpath(self.directory))
+        real_path = os.path.normcase(os.path.realpath(path))
         if not real_path.startswith(real_root + os.sep) and real_path != real_root:
             self.send_error(HTTPStatus.FORBIDDEN, "Path outside served directory")
             return None
