@@ -1116,6 +1116,54 @@ window.addEventListener('resize', () => fit.fit());
             f.close()
             raise
 
+    @staticmethod
+    def size_str(s):
+        if s < 1024:
+            return str(s) + ' B'
+        elif s < 1024 * 1024:
+            return f'{s / 1024:.1f} KB'
+        elif s < 1024 * 1024 * 1024:
+            return f'{s / (1024 * 1024):.1f} MB'
+        else:
+            return f'{s / (1024 * 1024 * 1024):.1f} GB'
+
+    @staticmethod
+    def date_str(ts):
+        return time.strftime('%b %d %H:%M', time.localtime(ts))
+
+    @staticmethod
+    def entry_html(e):
+        size_display = ''
+        date_display = ''
+        if e['cls'] == 'file':
+            size_display = SimpleHTTPRequestHandler.size_str(e['size'])
+        if e['mtime']:
+            date_display = SimpleHTTPRequestHandler.date_str(e['mtime'])
+        link = html.escape(urllib.parse.quote(e['link'], errors='surrogatepass'), quote=False)
+        display = e['display']
+        dname = html.escape(urllib.parse.quote(e['name'], errors='surrogatepass'), quote=False)
+        attrs = f' data-name="{html.escape(e["name"].lower(), quote=True)}" data-size="{e["size"]}" data-mtime="{e["mtime"]}"'
+        icon_html = '<span class="icon">' + e['icon'] + '</span>'
+        if e['cls'] == 'file':
+            _, ext = os.path.splitext(e['name'])
+            ext = ext.lower()
+            attrs += f' data-ext="{ext}"'
+            if ext in ('.mp4', '.webm', '.mkv', '.mov'):
+                icon_html = '<video class="vthumb" src="' + link + '" preload="metadata" playsinline muted></video>'
+        return (
+            '<div class="entry-wrap">'
+            + '<a class="entry ani ' + e['cls'] + '" href="' + link + '"' + attrs + '>'
+            + icon_html
+            + '<span class="name">' + display + '</span>'
+            + '<span class="meta">'
+            + ('<span class="size">' + size_display + '</span>' if size_display else '')
+            + ('<span class="mtime">' + date_display + '</span>' if date_display else '')
+            + '</span>'
+            + '</a>'
+            + '<button class="rn-btn" onclick="rename(this,'' + dname + '')" title="rename">✎</button>'
+            + '</div>'
+        )
+
     def list_directory(self, path):
         """Helper to produce a directory listing (absent index.html).
 
@@ -1173,51 +1221,6 @@ window.addEventListener('resize', () => fit.fit());
                 entry['display'] += '@'
                 entry['cls'] = 'link'
 
-        def size_str(s):
-            if s < 1024:
-                return str(s) + ' B'
-            elif s < 1024*1024:
-                return f'{s/1024:.1f} KB'
-            elif s < 1024*1024*1024:
-                return f'{s/(1024*1024):.1f} MB'
-            else:
-                return f'{s/(1024*1024*1024):.1f} GB'
-
-        def date_str(ts):
-            return time.strftime('%b %d %H:%M', time.localtime(ts))
-
-        def entry_html(e):
-            size_display = ''
-            date_display = ''
-            if e['cls'] == 'file':
-                size_display = size_str(e['size'])
-            if e['mtime']:
-                date_display = date_str(e['mtime'])
-            link = html.escape(urllib.parse.quote(e['link'], errors='surrogatepass'), quote=False)
-            display = e['display']
-            dname = html.escape(urllib.parse.quote(e['name'], errors='surrogatepass'), quote=False)
-            attrs = f' data-name="{html.escape(e["name"].lower(), quote=True)}" data-size="{e["size"]}" data-mtime="{e["mtime"]}"'
-            icon_html = '<span class="icon">' + e['icon'] + '</span>'
-            if e['cls'] == 'file':
-                _, ext = os.path.splitext(e['name'])
-                ext = ext.lower()
-                attrs += f' data-ext="{ext}"'
-                if ext in ('.mp4', '.webm', '.mkv', '.mov'):
-                    icon_html = '<video class="vthumb" src="' + link + '" preload="metadata" playsinline muted></video>'
-            return (
-                '<div class="entry-wrap">'
-                + '<a class="entry ani ' + e['cls'] + '" href="' + link + '"' + attrs + '>'
-                + icon_html
-                + '<span class="name">' + display + '</span>'
-                + '<span class="meta">'
-                + ('<span class="size">' + size_display + '</span>' if size_display else '')
-                + ('<span class="mtime">' + date_display + '</span>' if date_display else '')
-                + '</span>'
-                + '</a>'
-                + '<button class="rn-btn" onclick="rename(this,\'' + dname + '\')" title="rename">✎</button>'
-                + '</div>'
-            )
-
         dir_count = len(dirs)
         file_count = len(files)
 
@@ -1229,10 +1232,10 @@ window.addEventListener('resize', () => fit.fit());
 
         dir_section = ''
         if dirs:
-            dir_section = '<div class="section-label ani folders">folders</div>\n<div class="grid dirs">\n' + '\n'.join(entry_html(e) for e in dirs) + '\n</div>\n'
+            dir_section = '<div class="section-label ani folders">folders</div>\n<div class="grid dirs">\n' + '\n'.join(SimpleHTTPRequestHandler.entry_html(e) for e in dirs) + '\n</div>\n'
         file_section = ''
         if files:
-            file_section = '<div class="section-label ani files">files</div>\n<div class="grid">\n' + '\n'.join(entry_html(e) for e in files) + '\n</div>\n'
+            file_section = '<div class="section-label ani files">files</div>\n<div class="grid">\n' + '\n'.join(SimpleHTTPRequestHandler.entry_html(e) for e in files) + '\n</div>\n'
 
         if displaypath == '/':
             breadcrumb_html = '<a href="/" class="path-part ani">~</a>'
