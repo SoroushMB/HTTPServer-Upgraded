@@ -1149,7 +1149,7 @@ window.addEventListener('resize', () => fit.fit());
             ext = ext.lower()
             attrs += f' data-ext="{ext}"'
             if ext in ('.mp4', '.webm', '.mkv', '.mov'):
-                icon_html = '<video class="vthumb" src="' + link + '" preload="metadata" playsinline muted></video>'
+                icon_html = '<video class="vthumb" src="' + link + '?_thumb=1" preload="metadata" playsinline muted></video>'
         return (
             '<div class="entry-wrap">'
             + '<a class="entry ani ' + e['cls'] + '" href="' + link + '"' + attrs + '>'
